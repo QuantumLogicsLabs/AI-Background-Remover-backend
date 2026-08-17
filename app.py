@@ -5,13 +5,15 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from pathlib import Path
 
-from services.database import connect_db, close_db
-from services.quota    import setup_quota_indexes
-from services.cleanup  import start_cleanup_task, stop_cleanup_task
+from services.database   import connect_db, close_db
+from services.quota      import setup_quota_indexes
+from services.cleanup    import start_cleanup_task, stop_cleanup_task
+from services.bg_removal import warm_up
 from routes.auth        import router as auth_router
 from routes.remove_bg   import router as remove_bg_router
 from routes.download    import router as download_router
 from routes.history     import router as history_router
+from routes.history_all import router as history_all_router
 from routes.images      import router as images_router
 from routes.enhance     import router as enhance_router
 from routes.replace_bg  import router as replace_bg_router
@@ -28,6 +30,12 @@ async def lifespan(app: FastAPI):
     await connect_db()
     await setup_quota_indexes()
     start_cleanup_task()
+    # Pre-load AI model sessions so the first request isn't slow.
+    # Non-fatal: auth and other routes still work if warm-up fails.
+    try:
+        await warm_up()
+    except Exception as exc:
+        print(f"[AI] Model warm-up failed (first request may be slow): {exc}")
     yield
     stop_cleanup_task()
     await close_db()
@@ -54,7 +62,8 @@ app.add_middleware(
 app.include_router(auth_router,       prefix="/api")
 app.include_router(remove_bg_router,  prefix="/api")
 app.include_router(download_router,   prefix="/api")
-app.include_router(history_router,    prefix="/api")
+app.include_router(history_router,     prefix="/api")
+app.include_router(history_all_router, prefix="/api")
 app.include_router(images_router,     prefix="/api")
 app.include_router(enhance_router,    prefix="/api")
 app.include_router(replace_bg_router, prefix="/api")

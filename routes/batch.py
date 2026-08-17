@@ -24,10 +24,12 @@ import aiofiles
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response, JSONResponse
 
+from fastapi import Form
 from models.user    import UserOut
 from services.auth  import get_current_user
-from services.quota import check_and_increment_quota
+from services.quota import check_and_increment_quota, refund_quota
 from services.batch import create_job, get_job, process_batch, build_zip
+from services.bg_removal import QUALITY_OPTIONS
 
 router = APIRouter(tags=["Batch Processing"])
 
@@ -43,12 +45,14 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 async def batch_start(
     background_tasks: BackgroundTasks,
     files:            list[UploadFile] = File(...),
+    quality:          str              = Form("fast"),
     current_user:     UserOut          = Depends(get_current_user),
 ):
     """
     Start a batch background-removal job.
 
-    - **files** Up to 20 JPEG/PNG/WebP images (each ≤ 10 MB)
+    - **files**   Up to 20 JPEG/PNG/WebP images (each ≤ 10 MB)
+    - **quality** `fast` (default) | `standard` | `quality` — AI model to use
 
     Returns a **job_id** immediately. Poll `/api/batch/{job_id}/status`
     for progress.
@@ -60,12 +64,16 @@ async def batch_start(
             status_code=400,
             detail=f"Maximum {MAX_FILES} files per batch.",
         )
+    if quality not in QUALITY_OPTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"quality must be one of: {', '.join(QUALITY_OPTIONS)}.",
+        )
 
-    # Charge quota upfront for all files in the batch
-    for _ in files:
-        await check_and_increment_quota(current_user.user_id)
-
-    file_entries: list[dict] = []
+    # ── Phase 1: validate and read every file before touching quota ──────
+    # Collect (contents, safe_name) so we only charge quota once we know
+    # the whole batch is clean. A rejected file must never consume quota.
+    validated: list[tuple[bytes, str]] = []
 
     for upload in files:
         if upload.content_type not in ALLOWED_TYPES:
@@ -82,19 +90,43 @@ async def batch_start(
                 detail=f"File '{upload.filename}' exceeds {MAX_SIZE_MB} MB limit.",
             )
 
-        file_id     = str(uuid.uuid4())
-        safe_name   = os.path.basename(upload.filename or "upload")
-        upload_path = os.path.join(UPLOAD_DIR, f"{file_id}_{safe_name}")
+        safe_name = os.path.basename(upload.filename or "upload")
+        validated.append((contents, safe_name))
 
-        async with aiofiles.open(upload_path, "wb") as f:
-            await f.write(contents)
+    # ── Phase 2: charge quota for every validated file ───────────────────
+    # Track how many we've charged so we can refund on an unexpected error.
+    charged = 0
+    try:
+        for _ in validated:
+            await check_and_increment_quota(current_user.user_id)
+            charged += 1
+    except Exception:
+        # Refund any quota already charged before re-raising
+        if charged:
+            await refund_quota(current_user.user_id, charged)
+        raise
 
-        file_entries.append({
-            "original_name": safe_name,
-            "upload_path":   upload_path,
-        })
+    # ── Phase 3: write files to disk ─────────────────────────────────────
+    file_entries: list[dict] = []
 
-    job_id = await create_job(file_entries, user_id=current_user.user_id)
+    try:
+        for contents, safe_name in validated:
+            file_id     = str(uuid.uuid4())
+            upload_path = os.path.join(UPLOAD_DIR, f"{file_id}_{safe_name}")
+
+            async with aiofiles.open(upload_path, "wb") as f:
+                await f.write(contents)
+
+            file_entries.append({
+                "original_name": safe_name,
+                "upload_path":   upload_path,
+            })
+    except Exception:
+        # Refund all charged quota if we fail mid-write
+        await refund_quota(current_user.user_id, charged)
+        raise
+
+    job_id = await create_job(file_entries, user_id=current_user.user_id, quality=quality)
 
     # Fire-and-forget: runs in FastAPI's thread pool
     background_tasks.add_task(process_batch, job_id)
@@ -102,6 +134,7 @@ async def batch_start(
     return JSONResponse({
         "job_id":      job_id,
         "total_files": len(file_entries),
+        "quality":     quality,
         "status":      "pending",
     })
 
@@ -138,6 +171,7 @@ async def batch_status(
     return JSONResponse({
         "job_id":     job["job_id"],
         "status":     job["status"],
+        "quality":    job.get("quality", "fast"),
         "created_at": job["created_at"],
         "total":      job["total"],
         "completed":  job["completed"],

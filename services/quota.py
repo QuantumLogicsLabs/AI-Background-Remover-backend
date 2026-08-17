@@ -141,6 +141,33 @@ async def check_and_increment_quota(user_id: str) -> None:
         )
 
 
+async def refund_quota(user_id: str, count: int = 1) -> None:
+    """
+    Decrement the user's quota counter by ``count`` (default 1).
+
+    Called when a batch file fails validation *after* quota was already charged,
+    so the user is not penalised for files that were never processed.
+    Non-fatal: if the document no longer exists (e.g. TTL expired) this is a no-op.
+
+    Args:
+        user_id: The authenticated user's ID.
+        count:   Number of operations to refund (must be ≥ 1).
+    """
+    if DAILY_QUOTA_LIMIT == 0 or count < 1:
+        return
+
+    col   = get_collection("quota")
+    today = _today_utc()
+
+    try:
+        await col.update_one(
+            {"user_id": user_id, "date": today},
+            {"$inc": {"count": -count}},
+        )
+    except Exception:
+        pass  # Non-fatal — stale or missing doc is fine
+
+
 async def get_quota_status(user_id: str) -> dict:
     """
     Return the user's current quota usage for today.
@@ -174,4 +201,4 @@ async def setup_quota_indexes() -> None:
         await _ensure_indexes()
     except Exception as exc:
         # Non-fatal: app still starts, quota may not work until DB is reachable
-        print(f"⚠️  Could not create quota indexes: {exc}")
+        print(f"[QUOTA] Could not create quota indexes: {exc}")

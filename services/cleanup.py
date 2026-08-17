@@ -75,7 +75,7 @@ def _sweep_once() -> tuple[int, int]:
             except FileNotFoundError:
                 pass  # already gone — race with download, ignore
             except OSError as exc:
-                print(f"⚠️  Cleanup: could not delete {file_path}: {exc}")
+                print(f"[CLEANUP] Could not delete {file_path}: {exc}")
                 skipped += 1
 
     return deleted, skipped
@@ -85,7 +85,7 @@ async def _cleanup_loop() -> None:
     """Continuous sweep loop — runs until cancelled."""
     interval_secs = CLEANUP_INTERVAL_MINS * 60
     print(
-        f"🧹 Cleanup task started: sweep every {CLEANUP_INTERVAL_MINS:.0f} min, "
+        f"[CLEANUP] Task started: sweep every {CLEANUP_INTERVAL_MINS:.0f} min, "
         f"delete files older than {FILE_MAX_AGE_HOURS:.0f} h."
     )
     while True:
@@ -93,13 +93,13 @@ async def _cleanup_loop() -> None:
             await asyncio.sleep(interval_secs)
             deleted, skipped = _sweep_once()
             if deleted:
-                print(f"🧹 Cleanup: deleted {deleted} file(s), kept {skipped}.")
+                print(f"[CLEANUP] Deleted {deleted} file(s), kept {skipped}.")
         except asyncio.CancelledError:
-            print("🧹 Cleanup task stopped.")
+            print("[CLEANUP] Task stopped.")
             break
         except Exception as exc:
             # Never let an unexpected error kill the background task
-            print(f"⚠️  Cleanup sweep error: {exc}")
+            print(f"[CLEANUP] Sweep error: {exc}")
 
 
 # ── Public API ──────────────────────────────────────────────────────────────

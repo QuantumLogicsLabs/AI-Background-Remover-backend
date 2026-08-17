@@ -20,7 +20,13 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, HTTPException, Response, status, Depends
-from pymongo.errors import ServerSelectionTimeoutError, NetworkTimeout, ConnectionFailure
+from pymongo.errors import (
+    ServerSelectionTimeoutError,
+    NetworkTimeout,
+    ConnectionFailure,
+    ConfigurationError,
+    OperationFailure,
+)
 
 from models.user   import (
     UserCreate, UserLogin, UserOut, TokenResponse,
@@ -33,7 +39,7 @@ from services.auth import (
     create_access_token, create_refresh_token, decode_token,
     get_current_user, REFRESH_COOKIE_NAME, REFRESH_TOKEN_EXPIRE_DAYS,
 )
-from services.database import get_collection
+from services.database import get_collection, is_db_connected
 from services.quota    import get_quota_status
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -44,6 +50,22 @@ _COOKIE_SECURE   = os.getenv("COOKIE_SECURE",    "false").lower() == "true"
 _COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE",  "lax")   # "none" in production behind HTTPS
 
 _REFRESH_MAX_AGE = REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60  # seconds
+
+_DB_ERRORS = (
+    ServerSelectionTimeoutError,
+    NetworkTimeout,
+    ConnectionFailure,
+    ConfigurationError,
+    OperationFailure,
+)
+
+
+def _require_db() -> None:
+    if not is_db_connected():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is unreachable. Please try again later.",
+        )
 
 
 def _set_refresh_cookie(response: Response, token: str) -> None:
@@ -85,6 +107,7 @@ async def register(body: UserCreate, response: Response):
     - **password** Min 8 characters
     """
     try:
+        _require_db()
         collection = get_collection("users")
 
         existing = await collection.find_one({"email": body.email.lower()})
@@ -121,7 +144,7 @@ async def register(body: UserCreate, response: Response):
 
     except HTTPException:
         raise
-    except (ServerSelectionTimeoutError, NetworkTimeout, ConnectionFailure) as exc:
+    except _DB_ERRORS as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database is unreachable. Please try again later.",
@@ -137,6 +160,7 @@ async def login(body: UserLogin, response: Response):
     a long-lived refresh token (httpOnly cookie).
     """
     try:
+        _require_db()
         collection = get_collection("users")
         doc = await collection.find_one({"email": body.email.lower()})
 
@@ -162,7 +186,7 @@ async def login(body: UserLogin, response: Response):
 
     except HTTPException:
         raise
-    except (ServerSelectionTimeoutError, NetworkTimeout, ConnectionFailure) as exc:
+    except _DB_ERRORS as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database is unreachable. Please try again later.",

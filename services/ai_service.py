@@ -4,24 +4,52 @@ import json
 import re
 from io import BytesIO
 from PIL import Image
-from openai import AsyncOpenAI
-import google.generativeai as genai
+
+# Guard optional AI-provider packages so that a missing package for the
+# *unused* provider does not crash the backend at import time.
+try:
+    from openai import AsyncOpenAI
+    _openai_available = True
+except ImportError:
+    AsyncOpenAI = None  # type: ignore[assignment,misc]
+    _openai_available = False
+
+try:
+    import google.generativeai as genai
+    _genai_available = True
+except ImportError:
+    genai = None  # type: ignore[assignment]
+    _genai_available = False
 
 class AIService:
     """Handles communication with either Groq or Gemini AI providers."""
 
     def __init__(self):
         self.provider = os.getenv("AI_PROVIDER", "gemini").lower()
-        
+
         if self.provider == "gemini":
+            if not _genai_available:
+                raise ImportError(
+                    "AI_PROVIDER is set to 'gemini' but the 'google-generativeai' package is not "
+                    "installed. Run: pip install google-generativeai"
+                )
             self.api_key = os.getenv("GEMINI_API_KEY", "")
             self.is_configured = bool(self.api_key and "your_gemini_api_key" not in self.api_key)
             if self.is_configured:
                 genai.configure(api_key=self.api_key)
-            self.chat_model = "gemini-3.5-flash"
-            self.vision_model = "gemini-3.5-flash"
+            # Default to gemini-2.0-flash-lite (fast, cheap, multimodal).
+            # Override per-model via env vars if you want a different tier:
+            #   GEMINI_CHAT_MODEL   e.g. gemini-2.0-flash or gemini-1.5-pro
+            #   GEMINI_VISION_MODEL e.g. gemini-2.0-flash
+            self.chat_model   = os.getenv("GEMINI_CHAT_MODEL",   "gemini-2.0-flash-lite")
+            self.vision_model = os.getenv("GEMINI_VISION_MODEL", "gemini-2.0-flash-lite")
             self.client = None
         else:
+            if not _openai_available:
+                raise ImportError(
+                    "AI_PROVIDER is set to 'groq' but the 'openai' package is not installed. "
+                    "Run: pip install openai"
+                )
             self.api_key = os.getenv("GROQ_API_KEY", "")
             self.is_configured = bool(self.api_key and "your_groq_api_key" not in self.api_key)
             if self.is_configured:

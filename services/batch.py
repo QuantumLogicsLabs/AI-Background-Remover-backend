@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import TypedDict, Literal
 
 # Add AI module to path (mirrors bg_removal.py pattern)
-_AI_DIR = Path(__file__).resolve().parents[2] / "AI-Background-Remover-AI"
+_AI_DIR = Path(__file__).resolve().parents[2] / "AI"
 if str(_AI_DIR) not in sys.path:
     sys.path.insert(0, str(_AI_DIR))
 
@@ -57,6 +57,7 @@ class FileEntry(TypedDict):
 class Job(TypedDict):
     job_id:     str
     user_id:    str
+    quality:    str          # "fast" | "standard" | "quality"
     status:     JobStatus
     created_at: str
     files:      list[FileEntry]
@@ -91,13 +92,18 @@ async def _upsert_job(job: Job) -> None:
 
 # ── Public helpers ─────────────────────────────────────────────────────────
 
-async def create_job(file_entries: list[dict], user_id: str) -> str:
+async def create_job(
+    file_entries: list[dict],
+    user_id: str,
+    quality: str = "fast",
+) -> str:
     """
     Register a new batch job, persist it to MongoDB, and return its job_id.
 
     Args:
         file_entries: list of {"original_name": str, "upload_path": str}
         user_id:      ID of the user who owns this job
+        quality:      AI model quality — "fast" | "standard" | "quality"
     """
     job_id = str(uuid.uuid4())
     files: list[FileEntry] = [
@@ -113,6 +119,7 @@ async def create_job(file_entries: list[dict], user_id: str) -> str:
     job: Job = {
         "job_id":     job_id,
         "user_id":    user_id,
+        "quality":    quality,
         "status":     "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "files":      files,
@@ -150,30 +157,87 @@ def process_batch(job_id: str) -> None:
     """
     Background task entry point. Runs in FastAPI's thread-pool executor.
 
-    Iterates over queued files, runs bg removal on each, and persists
-    per-file and overall job status to MongoDB after every file.
+    Iterates over queued files, runs bg removal on each using the quality
+    stored on the job, and persists per-file and overall job status to
+    MongoDB after every file.
+
+    Motor (async) collections are bound to the event loop that created the
+    Motor client (FastAPI's main loop).  We must NOT call those collections
+    from a *different* event loop — doing so raises
+    ``RuntimeError: Task attached to a different loop``.
+
+    Fix: spin up a brand-new Motor client (and therefore a fresh event-loop-
+    independent connection) inside the dedicated asyncio.run() call.  The
+    client is closed before the coroutine returns, so no connection is leaked.
     """
-    # We're in a sync thread — run async DB calls via a new event loop
-    loop = asyncio.new_event_loop()
+    asyncio.run(_process_batch_async(job_id))
+
+
+async def _process_batch_async(job_id: str) -> None:
+    """
+    Async implementation of batch processing.
+
+    Creates its own Motor client so it is fully decoupled from the Motor
+    client that lives on FastAPI's main event loop.
+    """
+    import os as _os
+    from motor.motor_asyncio import AsyncIOMotorClient
+
+    mongo_uri   = _os.getenv("MONGO_URI", "mongodb://localhost:27017")
+    db_name     = _os.getenv("MONGO_DB_NAME", "ai_bg_remover")
+
+    _uri_lower  = mongo_uri.lower()
+    _use_tls    = (
+        "ssl=true" in _uri_lower
+        or "tls=true" in _uri_lower
+        or _uri_lower.startswith("mongodb+srv://")
+    )
+    _tls_kwargs = {"tls": True, "tlsAllowInvalidCertificates": False} if _use_tls else {}
+
+    _client = AsyncIOMotorClient(
+        mongo_uri,
+        serverSelectionTimeoutMS=10000,
+        connectTimeoutMS=10000,
+        socketTimeoutMS=15000,
+        **_tls_kwargs,
+    )
+    col = _client[db_name]["batch_jobs"]
+
+    async def _upsert(job: Job) -> None:
+        try:
+            await col.replace_one({"job_id": job["job_id"]}, job, upsert=True)
+        except Exception:
+            pass
+
+    async def _fetch() -> Job | None:
+        try:
+            doc = await col.find_one({"job_id": job_id}, {"_id": 0})
+            return dict(doc) if doc else None  # type: ignore[arg-type]
+        except Exception:
+            return None
 
     try:
-        job = loop.run_until_complete(_fetch_job_sync(job_id))
+        job = await _fetch()
         if job is None:
             return
 
+        # Honour the quality chosen by the user; fall back to "fast" for
+        # jobs created before the quality field was added.
+        quality = job.get("quality", "fast")
+
         job["status"] = "running"
-        loop.run_until_complete(_upsert_job(job))
+        await _upsert(job)
 
         for entry in job["files"]:
             entry["status"] = "processing"
-            loop.run_until_complete(_upsert_job(job))
+            await _upsert(job)
 
-            stem = Path(entry["upload_path"]).stem
+            stem            = Path(entry["upload_path"]).stem
             output_filename = f"{stem}_result.png"
             output_path     = os.path.join(OUTPUT_DIR, output_filename)
 
             try:
-                run_inference(entry["upload_path"], output_path)
+                run_inference(entry["upload_path"], output_path, quality=quality)
                 entry["output_filename"] = output_filename
                 entry["status"]          = "done"
                 job["completed"]        += 1
@@ -182,23 +246,13 @@ def process_batch(job_id: str) -> None:
                 entry["error"]  = str(exc)
                 job["failed"]  += 1
 
-            loop.run_until_complete(_upsert_job(job))
+            await _upsert(job)
 
         job["status"] = "done"
-        loop.run_until_complete(_upsert_job(job))
+        await _upsert(job)
 
     finally:
-        loop.close()
-
-
-async def _fetch_job_sync(job_id: str) -> Job | None:
-    """Fetch a job by ID without user check (internal use by process_batch)."""
-    try:
-        col = _collection()
-        doc = await col.find_one({"job_id": job_id}, {"_id": 0})
-        return dict(doc) if doc else None  # type: ignore[arg-type]
-    except Exception:
-        return None
+        _client.close()
 
 
 def build_zip(job: Job) -> tuple[bytes, str]:
