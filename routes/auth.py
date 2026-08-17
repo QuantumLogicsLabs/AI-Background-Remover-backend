@@ -1,19 +1,23 @@
 """
 Authentication Routes.
 
-POST /api/auth/register  — create account, returns access token + sets refresh cookie
-POST /api/auth/login     — exchange credentials for tokens
-POST /api/auth/refresh   — exchange refresh cookie for a new access token
-POST /api/auth/logout    — clear the refresh token cookie
-GET  /api/auth/me        — return current user (requires access token)
-GET  /api/auth/quota     — return daily quota usage for current user
+POST /api/auth/register        — create account, returns access token + sets refresh cookie
+POST /api/auth/login           — exchange credentials for tokens
+POST /api/auth/refresh         — exchange refresh cookie for a new access token
+POST /api/auth/logout          — clear the refresh token cookie
+GET  /api/auth/me              — return current user (requires access token)
+GET  /api/auth/quota           — return daily quota usage for current user
+POST /api/auth/forgot-password — send a password-reset email
+POST /api/auth/reset-password  — consume reset token and set a new password
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
+import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Cookie, HTTPException, Response, status, Depends
 from pymongo.errors import ServerSelectionTimeoutError, NetworkTimeout, ConnectionFailure
@@ -21,7 +25,9 @@ from pymongo.errors import ServerSelectionTimeoutError, NetworkTimeout, Connecti
 from models.user   import (
     UserCreate, UserLogin, UserOut, TokenResponse,
     UpdateProfileRequest, UpdatePasswordRequest, DeleteAccountRequest,
+    ForgotPasswordRequest, ResetPasswordRequest,
 )
+from services.email import send_password_reset_email
 from services.auth import (
     hash_password, verify_password,
     create_access_token, create_refresh_token, decode_token,
@@ -367,3 +373,103 @@ async def delete_account(
     await collection.delete_one({"user_id": current_user.user_id})
     _clear_refresh_cookie(response)
     # 204 No Content
+
+
+# ── Forgot Password ────────────────────────────────────────────────────────
+
+_RESET_TOKEN_EXPIRE_HOURS = 1
+
+
+@router.post("/forgot-password", status_code=202)
+async def forgot_password(body: ForgotPasswordRequest):
+    """
+    Request a password-reset email.
+
+    Always returns 202 Accepted regardless of whether the email exists,
+    so that this endpoint cannot be used to enumerate registered accounts.
+
+    - **email** The email address associated with the account
+    """
+    users_col  = get_collection("users")
+    tokens_col = get_collection("password_reset_tokens")
+
+    doc = await users_col.find_one({"email": body.email.lower()})
+    if doc is None:
+        # Silently succeed — do not reveal whether the email is registered
+        return {"detail": "If that email is registered you will receive a reset link shortly."}
+
+    # Generate a cryptographically secure random token
+    raw_token   = secrets.token_urlsafe(48)          # 64-char URL-safe string
+    token_hash  = hashlib.sha256(raw_token.encode()).hexdigest()  # store only the hash
+    expires_at  = datetime.now(timezone.utc) + timedelta(hours=_RESET_TOKEN_EXPIRE_HOURS)
+
+    # Invalidate any previous reset tokens for this user
+    await tokens_col.delete_many({"user_id": doc["user_id"]})
+
+    await tokens_col.insert_one({
+        "user_id":    doc["user_id"],
+        "token_hash": token_hash,
+        "expires_at": expires_at,
+        "used":       False,
+    })
+
+    try:
+        await send_password_reset_email(doc["email"], raw_token)
+    except Exception:
+        # Do NOT expose SMTP errors to the client
+        pass
+
+    return {"detail": "If that email is registered you will receive a reset link shortly."}
+
+
+# ── Reset Password ─────────────────────────────────────────────────────────
+
+@router.post("/reset-password", status_code=200)
+async def reset_password(body: ResetPasswordRequest):
+    """
+    Consume a valid password-reset token and set a new password.
+
+    - **token**        The raw token received via email
+    - **new_password** The new password (min 8 characters)
+    """
+    token_hash = hashlib.sha256(body.token.encode()).hexdigest()
+    tokens_col = get_collection("password_reset_tokens")
+    users_col  = get_collection("users")
+
+    token_doc = await tokens_col.find_one({"token_hash": token_hash})
+
+    invalid_exc = HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="This reset link is invalid or has expired. Please request a new one.",
+    )
+
+    if token_doc is None:
+        raise invalid_exc
+
+    if token_doc.get("used"):
+        raise invalid_exc
+
+    expires_at = token_doc["expires_at"]
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) > expires_at:
+        await tokens_col.delete_one({"token_hash": token_hash})
+        raise invalid_exc
+
+    # Mark token as used immediately (single-use)
+    await tokens_col.update_one(
+        {"token_hash": token_hash},
+        {"$set": {"used": True}},
+    )
+
+    # Update the user's password
+    new_hash = hash_password(body.new_password)
+    await users_col.update_one(
+        {"user_id": token_doc["user_id"]},
+        {"$set": {"hashed_password": new_hash}},
+    )
+
+    # Clean up used token
+    await tokens_col.delete_one({"token_hash": token_hash})
+
+    return {"detail": "Password has been reset successfully. You can now sign in."}

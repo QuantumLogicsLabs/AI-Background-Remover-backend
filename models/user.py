@@ -1,15 +1,17 @@
 """
 User Pydantic schemas.
 
-UserCreate          — payload for POST /api/auth/register
-UserLogin           — payload for POST /api/auth/login
-UserOut             — safe public representation (no password hash)
-UserInDB            — full internal representation (includes hashed_password)
-TokenResponse       — JWT response body
-TokenData           — decoded JWT claims
-UpdateProfileRequest— payload for PATCH /api/auth/profile
-UpdatePasswordRequest—payload for PATCH /api/auth/password
-DeleteAccountRequest— payload for DELETE /api/auth/account
+UserCreate             — payload for POST /api/auth/register
+UserLogin              — payload for POST /api/auth/login
+UserOut                — safe public representation (no password hash)
+UserInDB               — full internal representation (includes hashed_password)
+TokenResponse          — JWT response body
+TokenData              — decoded JWT claims
+UpdateProfileRequest   — payload for PATCH /api/auth/profile
+UpdatePasswordRequest  — payload for PATCH /api/auth/password
+DeleteAccountRequest   — payload for DELETE /api/auth/account
+ForgotPasswordRequest  — payload for POST /api/auth/forgot-password
+ResetPasswordRequest   — payload for POST /api/auth/reset-password
 """
 
 from __future__ import annotations
@@ -66,3 +68,14 @@ class UpdatePasswordRequest(BaseModel):
 class DeleteAccountRequest(BaseModel):
     """Payload for DELETE /api/auth/account — requires password confirmation."""
     password: str = Field(..., min_length=1)
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Payload for POST /api/auth/forgot-password."""
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """Payload for POST /api/auth/reset-password."""
+    token:        str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8, max_length=128)
