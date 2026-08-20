@@ -18,6 +18,7 @@ async def get_all_history(current_user: UserOut = Depends(get_current_user)):
       - ``"enhance"``     — image enhancement
       - ``"replace_bg"``  — background replacement
       - ``"smart_crop"``  — smart crop
+      - ``"recolor"``     — magic recolor
     """
     uid = current_user.user_id
 
@@ -27,6 +28,7 @@ async def get_all_history(current_user: UserOut = Depends(get_current_user)):
         ("enhance_history",    "enhance",     "upload_id",  "original_name"),
         ("replace_bg_history", "replace_bg",  "result_id",  "fg_filename"),
         ("smart_crop_history", "smart_crop",  "upload_id",  "original_name"),
+        ("recolor_history",    "recolor",     "upload_id",  "original_name"),
     ]
 
     records: list[dict] = []

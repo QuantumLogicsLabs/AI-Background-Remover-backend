@@ -89,7 +89,7 @@ def _resolve_srv_uri(srv_uri: str) -> str:
             f"mongodb://{credentials}@{hosts_str}/"
             f"?{base_opts}{extra}"
         )
-        print(f"[DATABASE] Resolved +srv → plain URI (via Google DNS): {hosts_str}")
+        print(f"[DATABASE] Resolved +srv -> plain URI (via Google DNS): {hosts_str}")
         return plain_uri
 
     except Exception as exc:

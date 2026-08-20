@@ -1,9 +1,19 @@
 import os
+import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from pathlib import Path
+
+# Ensure UTF-8 output encoding on Windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 from services.database   import connect_db, close_db
 from services.quota      import setup_quota_indexes
@@ -21,6 +31,7 @@ from routes.smart_crop  import router as smart_crop_router
 from routes.batch       import router as batch_router
 from routes.chat        import router as chat_router
 from routes.image       import router as image_router
+from routes.recolor     import router as recolor_router
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
@@ -34,8 +45,8 @@ async def lifespan(app: FastAPI):
     # Non-fatal: auth and other routes still work if warm-up fails.
     try:
         await warm_up()
-    except Exception as exc:
-        print(f"[AI] Model warm-up failed (first request may be slow): {exc}")
+    except BaseException as exc:
+        print(f"[AI] Model warm-up skipped/failed (will initialize on first request): {exc}")
     yield
     stop_cleanup_task()
     await close_db()
@@ -71,6 +82,7 @@ app.include_router(smart_crop_router, prefix="/api")
 app.include_router(batch_router,      prefix="/api")
 app.include_router(chat_router,       prefix="/api")
 app.include_router(image_router,      prefix="/api")
+app.include_router(recolor_router,    prefix="/api")
 
 
 @app.get("/", tags=["Health"])
