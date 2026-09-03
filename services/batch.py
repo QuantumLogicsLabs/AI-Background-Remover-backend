@@ -155,7 +155,7 @@ async def get_job(job_id: str, user_id: str | None = None) -> Job | None:
         return dict(doc) if doc else None  # type: ignore[arg-type]
     except Exception as e:
         logger.error(f"[Batch] Error fetching job {job_id}: {e}")
-        return None
+        raise HTTPException(status_code=503, detail=f"Database temporary error: {e}")
 
 
 async def process_batch_job(job_id: str) -> None:

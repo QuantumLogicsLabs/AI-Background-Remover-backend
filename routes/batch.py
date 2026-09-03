@@ -53,7 +53,7 @@ router = APIRouter(tags=["Batch Processing"])
 UPLOAD_DIR    = "uploads"
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_SIZE_MB   = 10
-MAX_FILES     = 20
+MAX_FILES     = 100
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
