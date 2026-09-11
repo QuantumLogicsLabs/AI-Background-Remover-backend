@@ -38,6 +38,7 @@ async def smart_crop_endpoint(
       internal background-removal step used to detect the subject bbox.
     """
     if file.content_type not in ALLOWED_TYPES:
+        raise HTTPException(status_code=415, detail=f"Unsupported file type '{file.content_type}'. Allowed: {ALLOWED_TYPES}")
 
     contents = await file.read()
     if len(contents) > MAX_SIZE_MB * 1024 * 1024:
