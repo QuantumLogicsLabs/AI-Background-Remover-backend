@@ -43,6 +43,7 @@ from routes.analytics      import router as analytics_router
 from routes.favorites       import router as favorites_router
 from routes.inpaint        import router as inpaint_router
 from routes.vectorize      import router as vectorize_router
+from routes.ml             import router as ml_router
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
@@ -102,6 +103,7 @@ app.include_router(analytics_router,      prefix="/api")
 app.include_router(favorites_router,      prefix="/api")
 app.include_router(inpaint_router,        prefix="/api")
 app.include_router(vectorize_router,      prefix="/api")
+app.include_router(ml_router,             prefix="/api")
 
 
 @app.get("/", tags=["Health"])
