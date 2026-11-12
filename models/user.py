@@ -66,8 +66,9 @@ class UpdatePasswordRequest(BaseModel):
 
 
 class DeleteAccountRequest(BaseModel):
-    """Payload for DELETE /api/auth/account — requires password confirmation."""
-    password: str = Field(..., min_length=1)
+    """Payload for DELETE /api/auth/account — password required unless the account
+    was created via Google/GitHub and has no password."""
+    password: Optional[str] = Field(None, min_length=1)
 
 
 class ForgotPasswordRequest(BaseModel):

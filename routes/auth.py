@@ -162,6 +162,14 @@ async def login(body: UserLogin, response: Response):
         collection = get_collection("users")
         doc = await collection.find_one({"email": body.email.lower()})
 
+        if doc is not None and not doc.get("hashed_password"):
+            # Account created via Google/GitHub — no password to check
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="This account uses Google or GitHub sign-in. Please use that option.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         if doc is None or not verify_password(body.password, doc["hashed_password"]):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -327,6 +335,13 @@ async def change_password(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
+    if not doc.get("hashed_password"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This account signs in with Google or GitHub and has no password to change. "
+                   "Use 'Forgot password' to set one.",
+        )
+
     if not verify_password(body.current_password, doc["hashed_password"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -369,11 +384,13 @@ async def delete_account(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
-    if not verify_password(body.password, doc["hashed_password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Password is incorrect. Account not deleted.",
-        )
+    # OAuth-only accounts have no password; the valid access token is the confirmation.
+    if doc.get("hashed_password"):
+        if not body.password or not verify_password(body.password, doc["hashed_password"]):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Password is incorrect. Account not deleted.",
+            )
 
     await collection.delete_one({"user_id": current_user.user_id})
     _clear_refresh_cookie(response)
