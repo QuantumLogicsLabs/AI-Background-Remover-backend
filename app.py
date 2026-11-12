@@ -24,6 +24,7 @@ from services.cleanup    import start_cleanup_task, stop_cleanup_task
 from services.job_queue  import job_queue
 from services.bg_removal import warm_up
 from routes.auth        import router as auth_router
+from routes.oauth       import router as oauth_router
 from routes.remove_bg   import router as remove_bg_router
 from routes.download    import router as download_router
 from routes.history     import router as history_router
@@ -84,6 +85,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router,       prefix="/api")
+app.include_router(oauth_router,      prefix="/api")
 app.include_router(remove_bg_router,  prefix="/api")
 app.include_router(download_router,   prefix="/api")
 app.include_router(history_router,     prefix="/api")
