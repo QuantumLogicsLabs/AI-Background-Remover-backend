@@ -21,7 +21,8 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Cookie, Query
+from fastapi import APIRouter, Cookie, HTTPException, Query
+from services.email_policy import enforce_allowed_email
 from fastapi.responses import RedirectResponse
 from jose import JWTError, jwt
 from pymongo.errors import DuplicateKeyError
@@ -182,9 +183,13 @@ async def _find_or_create_user(provider: str, profile: dict) -> dict:
         return doc
 
     # 2. Same verified email → link to the existing account
+        # 2. Same verified email → link to the existing account
     doc = await users.find_one({"email": profile["email"]})
     if doc:
-        await users.update_one({"user_id": doc["user_id"]}, {"$set": {key: profile["id"]}})
+        await users.update_one(
+            {"user_id": doc["user_id"]},
+            {"$set": {key: profile["id"], "email_verified": True}},
+        )
         return doc
 
     # 3. Brand-new account (no hashed_password key at all)
@@ -194,6 +199,7 @@ async def _find_or_create_user(provider: str, profile: dict) -> dict:
         "email":      profile["email"],
         "created_at": datetime.now(timezone.utc),
         "oauth":      {provider: profile["id"]},
+        "email_verified": True,
     }
     if profile.get("avatar"):
         doc["avatar_url"] = profile["avatar"]
@@ -277,12 +283,17 @@ async def oauth_callback(
 
     if not profile["email"] or not profile["email_verified"]:
         return _error_redirect("Your account has no verified email address.")
-
     try:
         _require_db()
         doc = await _find_or_create_user(provider, profile)
     except Exception:
         return _error_redirect("Server error. Please try again later.")
+
+    if provider != "google":   # Google already authenticated this account itself
+            try:
+                profile["email"] = enforce_allowed_email(profile["email"])
+            except HTTPException as exc:
+                return _error_redirect(str(exc.detail))
 
     token_claims = {"sub": doc["user_id"], "email": doc["email"]}
     # No access token here: the frontend obtains one from POST /api/auth/refresh.
