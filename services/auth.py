@@ -99,6 +99,10 @@ def decode_token(token: str, expected_type: str = "access") -> TokenData:
 
 # ── FastAPI dependency ─────────────────────────────────────────────────────
 
+def is_email_verified(doc: dict) -> bool:
+    """Social-login accounts are verified by the provider; password accounts need the code."""
+    return doc.get("email_verified") is True or bool(doc.get("oauth"))
+
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserOut:
     """
     Resolve a Bearer access JWT to a UserOut model.
@@ -115,6 +119,9 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserOut:
     collection = get_collection("users")
     doc = await collection.find_one({"user_id": token_data.user_id}, {"_id": 0})
     if doc is None:
+        raise credentials_exc
+    
+    if not is_email_verified(doc):
         raise credentials_exc
 
     return UserOut(
