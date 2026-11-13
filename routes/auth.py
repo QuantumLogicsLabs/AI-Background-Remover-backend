@@ -31,12 +31,19 @@ from models.user   import (
     UserCreate, UserLogin, UserOut, TokenResponse,
     UpdateProfileRequest, UpdatePasswordRequest, DeleteAccountRequest,
     ForgotPasswordRequest, ResetPasswordRequest,
+    RegisterResponse, VerifyEmailRequest, ResendVerificationRequest,
+    EmailChangeRequest, ConfirmEmailChangeRequest,
 )
 from services.email import send_password_reset_email
+from services.email_policy import enforce_allowed_email
+from services.verification import (
+    issue_code, consume_code, PURPOSE_SIGNUP, PURPOSE_EMAIL_CHANGE,
+)
 from services.auth import (
     hash_password, verify_password,
     create_access_token, create_refresh_token, decode_token,
-    get_current_user, REFRESH_COOKIE_NAME, REFRESH_TOKEN_EXPIRE_DAYS,
+    get_current_user, is_email_verified,
+    REFRESH_COOKIE_NAME, REFRESH_TOKEN_EXPIRE_DAYS,
 )
 from services.database import get_collection, is_db_connected
 
@@ -92,53 +99,49 @@ def _clear_refresh_cookie(response: Response) -> None:
 
 # ── Register ───────────────────────────────────────────────────────────────
 
-@router.post("/register", response_model=TokenResponse, status_code=201)
-async def register(body: UserCreate, response: Response):
+@router.post("/register", response_model=RegisterResponse, status_code=201)
+async def register(body: UserCreate):
     """
-    Create a new user account.
-
-    Returns a short-lived access token in the body and sets a long-lived
-    refresh token in an httpOnly cookie.
-
-    - **name**     Display name (2–80 chars)
-    - **email**    Unique email address
-    - **password** Min 8 characters
+    Create an unverified account and email a 6-digit code.
+    No session is issued until POST /auth/verify-email succeeds.
     """
     try:
         _require_db()
+        email      = enforce_allowed_email(body.email)
         collection = get_collection("users")
 
-        existing = await collection.find_one({"email": body.email.lower()})
+        existing = await collection.find_one({"email": email})
         if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="An account with that email already exists.",
-            )
+            # Only a pending sign-up (explicitly unverified) can be re-registered.
+            # This lets the real inbox owner reclaim an address someone else
+            # tried to sign up with. Legacy and social accounts are never overwritten.
+            if existing.get("email_verified") is False and not existing.get("oauth"):
+                await collection.update_one(
+                    {"user_id": existing["user_id"]},
+                    {"$set": {
+                        "name":            body.name.strip(),
+                        "hashed_password": hash_password(body.password),
+                    }},
+                )
+                user_id = existing["user_id"]
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="An account with that email already exists.",
+                )
+        else:
+            user_id = str(uuid.uuid4())
+            await collection.insert_one({
+                "user_id":         user_id,
+                "name":            body.name.strip(),
+                "email":           email,
+                "hashed_password": hash_password(body.password),
+                "created_at":      datetime.now(timezone.utc),
+                "email_verified":  False,
+            })
 
-        user_id = str(uuid.uuid4())
-        now     = datetime.now(timezone.utc)
-
-        user_doc = {
-            "user_id":         user_id,
-            "name":            body.name.strip(),
-            "email":           body.email.lower(),
-            "hashed_password": hash_password(body.password),
-            "created_at":      now,
-        }
-        await collection.insert_one(user_doc)
-
-        claims = {"sub": user_id, "email": body.email.lower()}
-        access_token  = create_access_token(claims)
-        refresh_token = create_refresh_token(claims)
-        _set_refresh_cookie(response, refresh_token)
-
-        user_out = UserOut(
-            user_id    = user_id,
-            name       = user_doc["name"],
-            email      = user_doc["email"],
-            created_at = now,
-        )
-        return TokenResponse(access_token=access_token, user=user_out)
+        await issue_code(user_id, email, PURPOSE_SIGNUP)
+        return RegisterResponse(email=email)
 
     except HTTPException:
         raise
@@ -147,6 +150,54 @@ async def register(body: UserCreate, response: Response):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database is unreachable. Please try again later.",
         ) from exc
+
+
+@router.post("/verify-email", response_model=TokenResponse)
+async def verify_email(body: VerifyEmailRequest, response: Response):
+    """Confirm the 6-digit code, mark the account verified and sign the user in."""
+    try:
+        _require_db()
+        users = get_collection("users")
+        doc = await users.find_one({"email": body.email.lower()})
+        if doc is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "That code is incorrect or has expired.")
+
+        await consume_code(doc["user_id"], PURPOSE_SIGNUP, body.code)
+        await users.update_one(
+            {"user_id": doc["user_id"]},
+            {"$set": {"email_verified": True, "email_verified_at": datetime.now(timezone.utc)}},
+        )
+
+        claims = {"sub": doc["user_id"], "email": doc["email"]}
+        _set_refresh_cookie(response, create_refresh_token(claims))
+        return TokenResponse(
+            access_token=create_access_token(claims),
+            user=UserOut(
+                user_id=doc["user_id"], name=doc["name"],
+                email=doc["email"], created_at=doc["created_at"],
+            ),
+        )
+    except HTTPException:
+        raise
+    except _DB_ERRORS as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is unreachable. Please try again later.",
+        ) from exc
+
+
+@router.post("/resend-verification", status_code=202)
+async def resend_verification(body: ResendVerificationRequest):
+    """Send a new code. Always answers the same way so emails cannot be enumerated."""
+    _require_db()
+    doc = await get_collection("users").find_one({"email": body.email.lower()})
+    if doc and not is_email_verified(doc):
+        try:
+            enforce_allowed_email(doc["email"])
+            await issue_code(doc["user_id"], doc["email"], PURPOSE_SIGNUP)
+        except HTTPException:
+            pass
+    return {"detail": "If that account is awaiting verification, a new code has been sent."}
 
 
 # ── Login ──────────────────────────────────────────────────────────────────
@@ -175,6 +226,17 @@ async def login(body: UserLogin, response: Response):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password.",
                 headers={"WWW-Authenticate": "Bearer"},
+            )
+        if not is_email_verified(doc):
+            enforce_allowed_email(doc["email"])   # legacy non-Google emails are refused here
+            await issue_code(doc["user_id"], doc["email"], PURPOSE_SIGNUP)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code":    "email_not_verified",
+                    "message": "Please verify your email. We sent you a 6-digit code.",
+                    "email":   doc["email"],
+                },
             )
 
         claims = {"sub": doc["user_id"], "email": doc["email"]}
@@ -233,6 +295,14 @@ async def refresh(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    if not is_email_verified(doc):
+        _clear_refresh_cookie(response)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Email not verified.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     claims = {"sub": doc["user_id"], "email": doc["email"]}
 
     # Rotate: issue new access token + new refresh token
@@ -268,48 +338,62 @@ async def update_profile(
     body: UpdateProfileRequest,
     current_user: UserOut = Depends(get_current_user),
 ):
-    """
-    Update the authenticated user's display name and/or email.
-
-    - **name**  (optional) New display name (2–80 chars)
-    - **email** (optional) New unique email address
-    """
-    collection = get_collection("users")
-
-    updates: dict = {}
-    if body.name is not None:
-        updates["name"] = body.name.strip()
-    if body.email is not None:
-        new_email = body.email.lower()
-        # Ensure the new email is not already taken by another account
-        existing = await collection.find_one(
-            {"email": new_email, "user_id": {"$ne": current_user.user_id}}
-        )
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="That email address is already in use.",
-            )
-        updates["email"] = new_email
-
-    if not updates:
+    """Update the display name. Email changes go through /auth/email-change."""
+    if body.name is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Provide at least one field to update.",
+            detail="Provide a name to update.",
         )
 
+    collection = get_collection("users")
     await collection.update_one(
         {"user_id": current_user.user_id},
-        {"$set": updates},
+        {"$set": {"name": body.name.strip()}},
     )
-
-    # Return fresh user doc
     doc = await collection.find_one({"user_id": current_user.user_id}, {"_id": 0})
     return UserOut(
-        user_id    = doc["user_id"],
-        name       = doc["name"],
-        email      = doc["email"],
-        created_at = doc["created_at"],
+        user_id=doc["user_id"], name=doc["name"],
+        email=doc["email"], created_at=doc["created_at"],
+    )
+
+
+@router.post("/email-change", status_code=202)
+async def request_email_change(
+    body: EmailChangeRequest,
+    current_user: UserOut = Depends(get_current_user),
+):
+    """Step 1: email a code to the NEW address. The email changes only after step 2."""
+    new_email = enforce_allowed_email(body.email)
+    if new_email == current_user.email.lower():
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "That is already your email address.")
+
+    if await get_collection("users").find_one({"email": new_email}):
+        raise HTTPException(status.HTTP_409_CONFLICT, "That email address is already in use.")
+
+    await issue_code(current_user.user_id, new_email, PURPOSE_EMAIL_CHANGE)
+    return {"detail": f"We sent a 6-digit code to {new_email}."}
+
+
+@router.post("/email-change/confirm", response_model=UserOut)
+async def confirm_email_change(
+    body: ConfirmEmailChangeRequest,
+    current_user: UserOut = Depends(get_current_user),
+):
+    """Step 2: confirm the code and switch the account to the new email."""
+    record    = await consume_code(current_user.user_id, PURPOSE_EMAIL_CHANGE, body.code)
+    new_email = record["email"]
+
+    users = get_collection("users")
+    if await users.find_one({"email": new_email, "user_id": {"$ne": current_user.user_id}}):
+        raise HTTPException(status.HTTP_409_CONFLICT, "That email address is already in use.")
+
+    await users.update_one(
+        {"user_id": current_user.user_id},
+        {"$set": {"email": new_email, "email_verified": True}},
+    )
+    return UserOut(
+        user_id=current_user.user_id, name=current_user.name,
+        email=new_email, created_at=current_user.created_at,
     )
 
 

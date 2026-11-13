@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import smtplib
 import ssl
+import asyncio
 from email.mime.multipart import MIMEMultipart
 from email.mime.text      import MIMEText
 
@@ -124,3 +125,36 @@ async def send_password_reset_email(to_email: str, reset_token: str) -> None:
         # Log but do NOT expose SMTP errors to the caller (security)
         print(f"[EMAIL] Failed to send reset email to {to_email}: {exc}")
         raise
+async def send_verification_code_email(to_email: str, code: str) -> None:
+    """Email a 6-digit verification code. Prints it to the console if SMTP isn't configured."""
+    subject = "Your AI Background Remover verification code"
+
+    plain = (
+        f"Your verification code is: {code}\n\n"
+        f"It expires in 10 minutes. If you didn't request this, you can ignore this email.\n\n"
+        f"— AI Background Remover Team"
+    )
+    html = (
+        '<div style="font-family:Arial,sans-serif;max-width:480px;margin:32px auto;padding:32px;'
+        'background:#1a1a1f;border:1px solid #2a2a35;border-radius:12px;color:#b0b0c0;">'
+        '<h2 style="color:#e040fb;margin-top:0;">Verify your email</h2>'
+        '<p>Enter this code in the app to confirm your email address:</p>'
+        f'<p style="font-size:34px;font-weight:700;letter-spacing:10px;color:#ffffff;margin:24px 0;">{code}</p>'
+        '<p>This code expires in <strong>10 minutes</strong>.</p>'
+        '<p style="font-size:12px;color:#666;margin-top:28px;">'
+        "If you didn't request this, you can safely ignore this email.</p>"
+        '</div>'
+    )
+
+    if not all([_SMTP_HOST, _SMTP_USER, _SMTP_PASSWORD]):
+        print(
+            f"\n[EMAIL] ── Verification Code (DEV MODE) ─────────────────────\n"
+            f"  To:    {to_email}\n"
+            f"  Code:  {code}\n"
+            f"────────────────────────────────────────────────────────────\n"
+        )
+        return
+
+    # smtplib is blocking, so run it off the event loop
+    await asyncio.to_thread(_send_smtp, to_email, subject, html, plain)
+    print(f"[EMAIL] Verification code sent to {to_email}")

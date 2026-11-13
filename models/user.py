@@ -54,9 +54,8 @@ class TokenData(BaseModel):
 
 
 class UpdateProfileRequest(BaseModel):
-    """Payload for PATCH /api/auth/profile — all fields optional."""
-    name:  Optional[str]      = Field(None, min_length=2, max_length=80)
-    email: Optional[EmailStr] = None
+    """Payload for PATCH /api/auth/profile (name only; email changes need verification)."""
+    name: Optional[str] = Field(None, min_length=2, max_length=80)
 
 
 class UpdatePasswordRequest(BaseModel):
@@ -80,3 +79,25 @@ class ResetPasswordRequest(BaseModel):
     """Payload for POST /api/auth/reset-password."""
     token:        str = Field(..., min_length=1)
     new_password: str = Field(..., min_length=8, max_length=128)
+
+class RegisterResponse(BaseModel):
+    """Sign-up does not log the user in; they must verify their email first."""
+    email: str
+    verification_required: bool = True
+
+
+class VerifyEmailRequest(BaseModel):
+    email: EmailStr
+    code:  str = Field(..., min_length=6, max_length=6)
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
+
+
+class EmailChangeRequest(BaseModel):
+    email: EmailStr
+
+
+class ConfirmEmailChangeRequest(BaseModel):
+    code: str = Field(..., min_length=6, max_length=6)
