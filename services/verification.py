@@ -10,8 +10,8 @@ from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, status
 from pymongo import ReturnDocument
 
+from services import database as _database
 from services.auth import SECRET_KEY
-from services.database import get_collection
 from services.email import send_verification_code_email
 
 CODE_TTL_MIN        = 10
@@ -22,6 +22,11 @@ PURPOSE_SIGNUP       = "signup"
 PURPOSE_EMAIL_CHANGE = "email_change"
 
 _COLLECTION = "email_verifications"
+
+
+def _col():
+    # Resolved at call time (not import time) so tests can swap in a fake database.
+    return _database.get_collection(_COLLECTION)
 
 
 def _aware(dt: datetime) -> datetime:
@@ -42,7 +47,7 @@ async def issue_code(user_id: str, email: str, purpose: str) -> bool:
     Create and email a fresh code. Returns False (and sends nothing) if a code
     was already sent to this same address within the cooldown window.
     """
-    col = get_collection(_COLLECTION)
+    col = _col()
     now = datetime.now(timezone.utc)
 
     existing = await col.find_one({"user_id": user_id, "purpose": purpose})
@@ -79,11 +84,12 @@ async def issue_code(user_id: str, email: str, purpose: str) -> bool:
 async def consume_code(user_id: str, purpose: str, code: str) -> dict:
     """Validate a code (single use). Returns the stored record or raises HTTP 400."""
     bad = HTTPException(status.HTTP_400_BAD_REQUEST, "That code is incorrect or has expired.")
-    col = get_collection(_COLLECTION)
+    col = _col()
+    key = {"user_id": user_id, "purpose": purpose}
 
     # Atomic increment so parallel guesses cannot beat the attempt limit
     doc = await col.find_one_and_update(
-        {"user_id": user_id, "purpose": purpose},
+        key,
         {"$inc": {"attempts": 1}},
         return_document=ReturnDocument.AFTER,
     )
@@ -91,18 +97,18 @@ async def consume_code(user_id: str, purpose: str, code: str) -> dict:
         raise bad
 
     if doc["attempts"] > MAX_ATTEMPTS:
-        await col.delete_one({"_id": doc["_id"]})
+        await col.delete_one(key)
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "Too many incorrect attempts. Please request a new code.",
         )
 
     if datetime.now(timezone.utc) > _aware(doc["expires_at"]):
-        await col.delete_one({"_id": doc["_id"]})
+        await col.delete_one(key)
         raise bad
 
     if not hmac.compare_digest(doc["code_hash"], _hash(user_id, purpose, code)):
         raise bad
 
-    await col.delete_one({"_id": doc["_id"]})
+    await col.delete_one(key)
     return doc

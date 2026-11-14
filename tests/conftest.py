@@ -50,6 +50,7 @@ def _make_user_doc():
         "email":           TEST_USER_EMAIL,
         "hashed_password": hash_password(TEST_USER_PASS),
         "created_at":      datetime.now(timezone.utc),
+        "email_verified":  True,
     }
 
 
@@ -259,3 +260,28 @@ def auth_headers() -> dict[str, str]:
 def png_file() -> bytes:
     """Minimal valid PNG bytes for upload tests."""
     return MINIMAL_PNG
+
+# ── Email verification helpers ───────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def sent_codes():
+    """
+    Replace real email sending in EVERY test and record what would have been
+    sent as (to_email, code) pairs. This also guarantees tests never send real
+    emails, even if backend/.env contains SMTP credentials.
+    """
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send(to_email: str, code: str) -> None:
+        sent.append((to_email, code))
+
+    with patch("services.verification.send_verification_code_email", new=fake_send):
+        yield sent
+
+
+def code_sent_to(sent: list[tuple[str, str]], email: str) -> str:
+    """Latest verification code emailed to `email` during this test."""
+    for to_email, code in reversed(sent):
+        if to_email == email:
+            return code
+    raise AssertionError(f"No verification code was sent to {email}")
