@@ -160,13 +160,41 @@ async def _setup_conversation_indexes() -> None:
 
 
 async def _setup_user_indexes() -> None:
-    """Create unique indexes on the users collection. Safe to call repeatedly."""
+    """Create indexes for users and email-verification codes. Safe to call repeatedly."""
+    db = client[get_db_name()]
+
     try:
-        users = client[get_db_name()]["users"]
+        users = db["users"]
         await users.create_index("email",   unique=True, name="users_email_unique")
         await users.create_index("user_id", unique=True, name="users_user_id_unique")
     except Exception as exc:
         print(f"[DATABASE] Could not create user indexes: {exc}")
+
+    # Accounts that never verify their email are deleted automatically.
+    # Only documents with email_verified == false match, so verified, social-login
+    # and older accounts (no field at all) are never touched.
+    try:
+        ttl_seconds = int(float(os.getenv("UNVERIFIED_ACCOUNT_TTL_HOURS", "24")) * 3600)
+        await db["users"].create_index(
+            "created_at",
+            expireAfterSeconds=ttl_seconds,
+            partialFilterExpression={"email_verified": False},
+            name="users_unverified_ttl",
+        )
+    except Exception as exc:
+        print(f"[DATABASE] Could not create unverified-account TTL index: {exc}")
+
+    # One-time codes expire on their own and there is at most one per user and purpose.
+    try:
+        codes = db["email_verifications"]
+        await codes.create_index("expires_at", expireAfterSeconds=0, name="email_verifications_ttl")
+        await codes.create_index(
+            [("user_id", 1), ("purpose", 1)],
+            unique=True,
+            name="email_verifications_user_purpose",
+        )
+    except Exception as exc:
+        print(f"[DATABASE] Could not create email-verification indexes: {exc}")
 
 
 def get_db_name() -> str:
