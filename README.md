@@ -18,28 +18,28 @@ It does not contain model code — it calls the AI package (the `AI/` submodule)
 
 ## v2 Feature Set
 
-| Feature | Endpoint(s) | Status |
-|---|---|---|
-| User registration & login | `POST /api/auth/register`, `POST /api/auth/login` | ✅ |
-| JWT auth + httpOnly refresh cookies | `POST /api/auth/refresh`, `POST /api/auth/logout` | ✅ |
-| Background removal | `POST /api/remove-background` | ✅ |
-| Image enhancement | `POST /api/enhance` | ✅ |
-| Background replacement | `POST /api/replace-bg` | ✅ |
-| Smart crop | `POST /api/smart-crop` | ✅ |
-| Recolor & eraser | `POST /api/recolor` | ✅ |
-| Inpainting | `POST /api/inpaint` | ✅ |
-| Vectorize (PNG → SVG) | `POST /api/vectorize` | ✅ |
-| Batch processing | `POST /api/batch` | ✅ |
-| History & download | `GET /api/history`, `GET /api/download/{filename}` | ✅ |
-| AI chatbot (vision-aware) | `POST /api/chat` | ✅ |
-| AI image analysis | `POST /api/ai/analyze` | ✅ |
-| Per-user daily quota | Middleware on all AI routes | ✅ |
-| Usage stats & analytics | `GET /api/stats`, `GET /api/analytics` | ✅ |
-| Action history & undo | `GET /api/action-history` | ✅ |
-| Collaboration routes | `POST /api/collab/*` | ✅ |
-| Cloud storage (S3-compatible) | `STORAGE_BACKEND=s3` env var | ✅ |
-| Automatic file cleanup | Background task every 60 mins | ✅ |
-| Job queue | Async task queue for batch jobs | ✅ |
+| Feature                             | Endpoint(s)                                        | Status |
+| ----------------------------------- | -------------------------------------------------- | ------ |
+| User registration & login           | `POST /api/auth/register`, `POST /api/auth/login`  | ✅     |
+| JWT auth + httpOnly refresh cookies | `POST /api/auth/refresh`, `POST /api/auth/logout`  | ✅     |
+| Background removal                  | `POST /api/remove-background`                      | ✅     |
+| Image enhancement                   | `POST /api/enhance`                                | ✅     |
+| Background replacement              | `POST /api/replace-bg`                             | ✅     |
+| Smart crop                          | `POST /api/smart-crop`                             | ✅     |
+| Recolor & eraser                    | `POST /api/recolor`                                | ✅     |
+| Inpainting                          | `POST /api/inpaint`                                | ✅     |
+| Vectorize (PNG → SVG)               | `POST /api/vectorize`                              | ✅     |
+| Batch processing                    | `POST /api/batch`                                  | ✅     |
+| History & download                  | `GET /api/history`, `GET /api/download/{filename}` | ✅     |
+| AI chatbot (vision-aware)           | `POST /api/chat`                                   | ✅     |
+| AI image analysis                   | `POST /api/ai/analyze`                             | ✅     |
+| Per-user daily quota                | Middleware on all AI routes                        | ✅     |
+| Usage stats & analytics             | `GET /api/stats`, `GET /api/analytics`             | ✅     |
+| Action history & undo               | `GET /api/action-history`                          | ✅     |
+| Collaboration routes                | `POST /api/collab/*`                               | ✅     |
+| Cloud storage (S3-compatible)       | `STORAGE_BACKEND=s3` env var                       | ✅     |
+| Automatic file cleanup              | Background task every 60 mins                      | ✅     |
+| Job queue                           | Async task queue for batch jobs                    | ✅     |
 
 ---
 
@@ -116,33 +116,70 @@ backend/
 ### Auth
 
 #### `POST /api/auth/register`
-Register a new user.
+
+Create an **unverified** account and email a 6-digit code. The user is **not** signed in yet.
+
+Only Google accounts are accepted: the address must use a domain listed in `ALLOWED_EMAIL_DOMAINS` (default `gmail.com`, `googlemail.com`).
 
 **Request body:**
+
 ```json
 {
   "name": "John Doe",
-  "email": "john@example.com",
+  "email": "john@gmail.com",
   "password": "securepassword123"
 }
 ```
 
 **Response:** `201 Created`
+
 ```json
-{
-  "user_id": "uuid-string",
-  "name": "John Doe",
-  "email": "john@example.com",
-  "created_at": "2026-09-01T10:00:00Z"
-}
+{ "email": "john@gmail.com", "verification_required": true }
 ```
+
+**Errors:** `409` account already exists · `422` invalid or non-Google email · `503` the email could not be sent
+
+---
+
+#### `POST /api/auth/verify-email`
+
+Confirm the 6-digit code. On success the account is marked verified and the user is signed in (same response as login, plus the `refresh_token` cookie).
+
+**Request body:**
+
+```json
+{ "email": "john@gmail.com", "code": "482913" }
+```
+
+Codes expire after **10 minutes**, can be used **once**, and are locked after **5 wrong attempts** (request a new code). Failures return `400`.
+
+---
+
+#### `POST /api/auth/resend-verification`
+
+Send a new code (at most one per 60 seconds per address). Always returns `202` with the same message whether or not the account exists, so emails cannot be enumerated.
+
+**Request body:** `{ "email": "john@gmail.com" }`
+
+---
+
+#### `POST /api/auth/email-change` and `POST /api/auth/email-change/confirm`
+
+Change the account email in two steps (requires `Authorization: Bearer <token>`).
+
+1. `POST /api/auth/email-change` with `{ "email": "new@gmail.com" }` emails a code to the **new** address (`202`).
+2. `POST /api/auth/email-change/confirm` with `{ "code": "482913" }` switches the account to the new address and returns the updated user.
+
+`PATCH /api/auth/profile` only updates `name`; it never changes the email.
 
 ---
 
 #### `POST /api/auth/login`
+
 Login, receive JWT access token + httpOnly refresh cookie.
 
 **Request body:**
+
 ```json
 {
   "email": "john@example.com",
@@ -151,6 +188,7 @@ Login, receive JWT access token + httpOnly refresh cookie.
 ```
 
 **Response:** `200 OK`
+
 ```json
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
@@ -166,12 +204,18 @@ Login, receive JWT access token + httpOnly refresh cookie.
 
 Also sets a secure httpOnly cookie named `refresh_token` (30 days TTL).
 
+If the password is correct but the email is not verified yet, login returns `403` with
+`{"detail": {"code": "email_not_verified", "message": "...", "email": "..."}}`
+and emails a fresh code. Finish with `POST /api/auth/verify-email`.
+
 ---
 
 #### `POST /api/auth/refresh`
+
 Refresh access token using the httpOnly refresh cookie.
 
 **Response:** `200 OK`
+
 ```json
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
@@ -182,9 +226,11 @@ Refresh access token using the httpOnly refresh cookie.
 ---
 
 #### `POST /api/auth/logout`
+
 Logout, clear refresh cookie.
 
 **Response:** `200 OK`
+
 ```json
 { "message": "Logged out successfully." }
 ```
@@ -192,9 +238,11 @@ Logout, clear refresh cookie.
 ---
 
 #### `GET /api/auth/me`
+
 Get current user info.
 
 **Response:** `200 OK`
+
 ```json
 {
   "user_id": "uuid-string",
@@ -209,6 +257,7 @@ Get current user info.
 ### Background Removal
 
 #### `POST /api/remove-background`
+
 Upload an image and get a transparent PNG back.
 
 **Request:** `multipart/form-data`
@@ -218,6 +267,7 @@ Upload an image and get a transparent PNG back.
 | `quality` | string | No | `fast` (default), `standard`, `quality` |
 
 **Response:** `200 OK`
+
 ```json
 {
   "output_filename": "abc123_result.png",
@@ -231,9 +281,11 @@ Upload an image and get a transparent PNG back.
 ### Enhancement
 
 #### `POST /api/enhance`
+
 Enhance image with brightness, contrast, saturation, sharpness adjustments.
 
 **Request body:**
+
 ```json
 {
   "image_data": "base64-encoded-image-string",
@@ -248,6 +300,7 @@ Enhance image with brightness, contrast, saturation, sharpness adjustments.
 ```
 
 **Response:** `200 OK`
+
 ```json
 {
   "enhanced_image": "base64-encoded-result"
@@ -259,6 +312,7 @@ Enhance image with brightness, contrast, saturation, sharpness adjustments.
 ### Background Replacement
 
 #### `POST /api/replace-bg`
+
 Replace background with solid colour, gradient, or uploaded image.
 
 ---
@@ -266,6 +320,7 @@ Replace background with solid colour, gradient, or uploaded image.
 ### Smart Crop
 
 #### `POST /api/smart-crop`
+
 AI-guided crop to a specific aspect ratio with subject-aware padding.
 
 ---
@@ -273,9 +328,11 @@ AI-guided crop to a specific aspect ratio with subject-aware padding.
 ### History
 
 #### `GET /api/history`
+
 Returns the current user's last 50 processing jobs, newest first.
 
 **Response:** `200 OK`
+
 ```json
 [
   {
@@ -295,6 +352,7 @@ Returns the current user's last 50 processing jobs, newest first.
 ### Download
 
 #### `GET /api/download/{filename}`
+
 Download a processed image file.
 
 **Response:** PNG file stream (`image/png`)  
@@ -305,10 +363,12 @@ Download a processed image file.
 ### Delete
 
 #### `DELETE /api/image/{id}`
+
 Deletes a processed image from storage and removes its MongoDB record.
 
 **Path param:** `id` — the `upload_id` (UUID portion before `_result.png`)  
 **Response:** `200 OK`
+
 ```json
 { "message": "Image abc123 deleted successfully." }
 ```
@@ -318,17 +378,20 @@ Deletes a processed image from storage and removes its MongoDB record.
 ### AI Chatbot
 
 #### `POST /api/chat`
+
 Chat with AI assistant (vision-aware, action-aware).
 
 **Request body:**
+
 ```json
 {
   "message": "Make the background white",
-  "image_data": "base64-encoded-image-string"  // optional
+  "image_data": "base64-encoded-image-string" // optional
 }
 ```
 
 **Response:** `200 OK`
+
 ```json
 {
   "reply": "I'll apply a clean white background for you.",
@@ -346,9 +409,11 @@ Chat with AI assistant (vision-aware, action-aware).
 ### AI Image Analysis
 
 #### `POST /api/ai/analyze`
+
 Get comprehensive AI analysis: subject, quality scores, colour palette, recommendations.
 
 **Response:** `200 OK`
+
 ```json
 {
   "subject": "A vibrant green parrot on a perch",
@@ -370,6 +435,7 @@ Get comprehensive AI analysis: subject, quality scores, colour palette, recommen
 ### Health Check
 
 #### `GET /`
+
 ```json
 { "status": "ok", "message": "AI Background Remover API v2 is running." }
 ```
@@ -411,11 +477,13 @@ routes/remove_bg.py
 ## Running Locally
 
 ### Prerequisites
+
 - Python 3.11+
 - MongoDB running on `localhost:27017` (or use Docker Compose from parent repo)
 - The AI submodule present at `../AI/`
 
 ### Setup
+
 ```bash
 # From the parent repo root, activate the virtual environment
 .venv\Scripts\activate        # Windows
@@ -434,6 +502,7 @@ cp backend/.env.example backend/.env
 ```
 
 ### Run
+
 ```bash
 cd backend
 uvicorn app:app --reload --port 8000
@@ -453,12 +522,59 @@ See `backend/.env.example` for the full documented list (30+ variables).
 
 **Key required variables:**
 
-| Variable | Description |
-|---|---|
-| `SECRET_KEY` | JWT signing secret — use `python -c "import secrets; print(secrets.token_hex(32))"` |
-| `MONGO_URI` | MongoDB connection string |
-| `GEMINI_API_KEY` | Google Gemini API key (for chat / analysis) |
-| `ALLOWED_ORIGINS` | Comma-separated frontend URLs for CORS |
+| Variable                      | Description                                                                         |
+| ----------------------------- | ----------------------------------------------------------------------------------- |
+| `SECRET_KEY`                  | JWT signing secret — use `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `MONGO_URI`                   | MongoDB connection string                                                           |
+| `GEMINI_API_KEY`              | Google Gemini API key (for chat / analysis)                                         |
+| `ALLOWED_ORIGINS`             | Comma-separated frontend URLs for CORS                                              |
+| `SMTP_HOST` / `SMTP_PORT`     | Mail server (Gmail: `smtp.gmail.com` / `587`)                                       |
+| `SMTP_USER` / `SMTP_PASSWORD` | Sender login. For Gmail use an **App Password**, not your normal password           |
+| `SMTP_FROM`                   | "From" address (defaults to `SMTP_USER`)                                            |
+| `ALLOWED_EMAIL_DOMAINS`       | Comma-separated domains allowed to sign up (default `gmail.com,googlemail.com`)     |
+
+---
+
+## Email Verification & SMTP Setup
+
+New password accounts must verify their email with a 6-digit code before they can sign in.
+Accounts created with "Continue with Google" are verified by Google; GitHub accounts must also use an allowed domain.
+
+**Development (no SMTP):** leave the `SMTP_*` variables empty. Nothing is emailed; the code is
+printed in the backend terminal instead:
+
+```
+[EMAIL] ── Verification Code (DEV MODE) ──
+  To:    you@gmail.com
+  Code:  482913
+```
+
+**Sending real emails with Gmail:**
+
+1. Use a dedicated sender Gmail account and turn on **2-Step Verification**.
+2. Create an App Password at <https://myaccount.google.com/apppasswords>.
+3. Set in `backend/.env`:
+   ```env
+   SMTP_HOST=smtp.gmail.com
+   SMTP_PORT=587
+   SMTP_USER=your-sender@gmail.com
+   SMTP_PASSWORD=your-16-char-app-password
+   SMTP_FROM=your-sender@gmail.com
+   ```
+4. **Restart the backend** (`.env` is read at startup).
+
+If sending fails you will see `[EMAIL] Failed to send verification code ... 535`, which almost always means a
+normal password was used instead of an App Password.
+
+**Existing accounts:** users created before verification existed have no `email_verified` field and are asked to
+verify on their next login. To skip that for everyone already in the database, run once:
+
+```js
+db.users.updateMany(
+  { email_verified: { $exists: false } },
+  { $set: { email_verified: true } },
+);
+```
 
 ---
 
@@ -468,14 +584,14 @@ See `backend/.env.example` for the full documented list (30+ variables).
 
 **Collections:**
 
-| Collection | Purpose |
-|---|---|
-| `users` | User accounts (email, password hash, created_at) |
-| `history` | Processing history (per user, per operation) |
-| `quota` | Daily usage counts (TTL auto-expires at midnight UTC) |
-| `analytics` | Usage events, AI suggestions, applied/rejected actions |
-| `prompts` | User-saved prompt templates |
-| `action_history` | Undo/redo stack per user session |
+| Collection       | Purpose                                                |
+| ---------------- | ------------------------------------------------------ |
+| `users`          | User accounts (email, password hash, created_at)       |
+| `history`        | Processing history (per user, per operation)           |
+| `quota`          | Daily usage counts (TTL auto-expires at midnight UTC)  |
+| `analytics`      | Usage events, AI suggestions, applied/rejected actions |
+| `prompts`        | User-saved prompt templates                            |
+| `action_history` | Undo/redo stack per user session                       |
 
 The connection is opened on FastAPI startup and closed on shutdown — both handled in `app.py`'s lifespan context manager.
 
@@ -504,12 +620,18 @@ The connection is opened on FastAPI startup and closed on shutdown — both hand
 
 ## Testing
 
+## Testing
+
 ```bash
 cd backend
 pytest
 ```
 
-Tests are in `backend/tests/` (if present) or add them as `test_*.py` files.
+Tests live in `backend/tests/`. MongoDB is replaced by an in-memory fake and **no emails are sent**:
+the `sent_codes` fixture in `tests/conftest.py` captures verification codes so tests can read them
+with `code_sent_to(sent_codes, "user@gmail.com")`.
+
+Seeded users in tests must include `"email_verified": True`, otherwise they are treated as unverified.
 
 ---
 
