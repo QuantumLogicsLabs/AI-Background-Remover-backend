@@ -10,12 +10,15 @@ Pillow handles in-memory conversion so no extra files are written to disk.
 """
 
 import io
+import logging
 import os
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response, FileResponse
 
 router = APIRouter(tags=["Download"])
+
+logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = "output"
 
@@ -102,8 +105,10 @@ async def download_image(
             img.save(buf, **save_kwargs)
             buf.seek(0)
 
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Image conversion failed: {exc}")
+    except Exception:
+        # Keep the details in the server log; do not leak internals to the client.
+        logger.exception("Image conversion failed for %s (format=%s)", safe_filename, fmt)
+        raise HTTPException(status_code=500, detail="Image conversion failed.")
 
     out_filename = _output_filename(safe_filename, fmt)
 
