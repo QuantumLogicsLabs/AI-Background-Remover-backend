@@ -47,6 +47,7 @@ from routes.favorites       import router as favorites_router
 from routes.inpaint        import router as inpaint_router
 from routes.vectorize      import router as vectorize_router
 from routes.ml             import router as ml_router
+from routes.health         import router as health_router
 
 
 @asynccontextmanager
@@ -106,6 +107,7 @@ app.include_router(favorites_router,      prefix="/api")
 app.include_router(inpaint_router,        prefix="/api")
 app.include_router(vectorize_router,      prefix="/api")
 app.include_router(ml_router,             prefix="/api")
+app.include_router(health_router,         prefix="/api")
 
 
 @app.get("/", tags=["Health"])
