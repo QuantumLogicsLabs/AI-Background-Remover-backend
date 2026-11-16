@@ -6,6 +6,7 @@ from typing import Optional, List
 from models.ai import ChatResponse, ChatHistoryResponse, ChatMessage, ConversationSummary, ConversationListResponse
 from services.ai_service import AIService
 from services.image_service import ImageService
+from services.chat_validation import validate_message, parse_history
 from services.upload_validation import read_upload_limited
 from services.auth import get_current_user
 from services.tracking import track_usage, track_cost
@@ -33,6 +34,7 @@ async def chat(
     current_user: UserOut = Depends(get_current_user)
 ):
     try:
+        message = validate_message(message)
         image_bytes = None
         if file:
             raw_bytes = await read_upload_limited(file, MAX_IMAGE_MB)
@@ -46,18 +48,7 @@ async def chat(
             image_bytes = image_service.preprocess(raw_bytes)
 
         # ── Parse incoming history (best-effort — bad JSON is treated as empty) ──
-        parsed_history: List[dict] = []
-        if history:
-            try:
-                parsed_history = json.loads(history)
-                if not isinstance(parsed_history, list):
-                    parsed_history = []
-            except (json.JSONDecodeError, TypeError):
-                parsed_history = []
-
-        conv_id = conversation_id or str(uuid.uuid4())
-
-        reply, thinking, action = await ai_service.chat(message, image_bytes, history=parsed_history)
+        parsed_history = parse_history(history)
 
         # ── Persist this turn (user + assistant messages) to the conversation ──
         try:
