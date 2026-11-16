@@ -476,6 +476,11 @@ async def delete_account(
                 detail="Password is incorrect. Account not deleted.",
             )
 
+    # Remove everything the user owns (history, files, chats, favourites, ...)
+    # first, so no orphaned data is left behind once the account is gone.
+    from services.account_cleanup import purge_user_data  # local import avoids circular
+
+    await purge_user_data(current_user.user_id)
     await collection.delete_one({"user_id": current_user.user_id})
     _clear_refresh_cookie(response)
     # 204 No Content
