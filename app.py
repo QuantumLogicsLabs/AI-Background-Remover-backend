@@ -1,14 +1,16 @@
 import os
 import sys
-from dotenv import load_dotenv
+from contextlib import asynccontextmanager
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env BEFORE importing the app modules below: several of them read
+# environment variables (for example SECRET_KEY) at import time.
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-from dotenv import load_dotenv
-from pathlib import Path
 
 # Ensure UTF-8 output encoding on Windows consoles
 if hasattr(sys.stdout, "reconfigure"):
@@ -45,8 +47,6 @@ from routes.favorites       import router as favorites_router
 from routes.inpaint        import router as inpaint_router
 from routes.vectorize      import router as vectorize_router
 from routes.ml             import router as ml_router
-
-load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 
 @asynccontextmanager
@@ -111,4 +111,3 @@ app.include_router(ml_router,             prefix="/api")
 @app.get("/", tags=["Health"])
 async def root():
     return {"status": "ok", "message": "AI Background Remover API v2 is running."}
-
