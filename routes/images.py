@@ -28,6 +28,7 @@ OUTPUT_DIR = "output"
 # "enhance_history"    enhance    :  {id}_enhanced.png
 # "replace_bg_history" replace_bg :  {result_id}_composited.png   (id_field = result_id)
 # "smart_crop_history" smart_crop :  {id}_removed.png  +  {id}_cropped.png
+# "recolor_history"    recolor    :  {id}_recolored.png
 
 _COLLECTION_MAP: list[tuple[str, str, list[str]]] = [
     # (collection,           id_field,    [filename templates])
@@ -35,6 +36,7 @@ _COLLECTION_MAP: list[tuple[str, str, list[str]]] = [
     ("enhance_history",    "upload_id",  ["{id}_enhanced.png"]),
     ("replace_bg_history", "result_id",  ["{id}_composited.png"]),
     ("smart_crop_history", "upload_id",  ["{id}_removed.png", "{id}_cropped.png"]),
+    ("recolor_history",    "upload_id",  ["{id}_recolored.png"]),
 ]
 
 
@@ -46,10 +48,10 @@ async def delete_image(
     """
     Delete a processed image record (and its output file(s) from disk) by ID.
 
-    The endpoint searches all four history collections — history (remove-bg),
-    enhance_history, replace_bg_history, and smart_crop_history — so it works
-    regardless of which operation produced the image. For smart_crop records
-    both the _removed.png and _cropped.png files are cleaned up.
+    The endpoint searches all five history collections — history (remove-bg),
+    enhance_history, replace_bg_history, smart_crop_history and recolor_history —
+    so it works regardless of which operation produced the image. For smart_crop
+    records both the _removed.png and _cropped.png files are cleaned up.
 
     Returns 403 if the record belongs to a different user.
     Returns 200 even if no DB record is found (idempotent delete).
