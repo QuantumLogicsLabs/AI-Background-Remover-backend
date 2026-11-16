@@ -6,6 +6,7 @@ from typing import Optional, List
 from models.ai import ChatResponse, ChatHistoryResponse, ChatMessage, ConversationSummary, ConversationListResponse
 from services.ai_service import AIService
 from services.image_service import ImageService
+from services.upload_validation import read_upload_limited
 from services.auth import get_current_user
 from services.tracking import track_usage, track_cost
 from services.database import get_collection
@@ -14,6 +15,8 @@ from models.user import UserOut
 router = APIRouter(prefix="/chat", tags=["chat"])
 ai_service = AIService()
 image_service = ImageService()
+
+MAX_IMAGE_MB = 10
 
 
 def _estimate_tokens(text: str) -> int:
@@ -32,7 +35,7 @@ async def chat(
     try:
         image_bytes = None
         if file:
-            raw_bytes = await file.read()
+            raw_bytes = await read_upload_limited(file, MAX_IMAGE_MB)
 
             if not image_service.validate(raw_bytes):
                 raise HTTPException(

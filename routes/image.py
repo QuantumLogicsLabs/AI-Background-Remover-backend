@@ -11,6 +11,7 @@ from models.ai import (
 )
 from services.ai_service import AIService
 from services.image_service import ImageService
+from services.upload_validation import read_upload_limited
 from services.auth import get_current_user
 from models.user import UserOut
 
@@ -18,13 +19,15 @@ router = APIRouter(prefix="/image", tags=["image"])
 ai_service = AIService()
 image_service = ImageService()
 
+MAX_SIZE_MB = 10
+
 
 @router.post("/analyze", response_model=ImageAnalysisResponse)
 async def analyze_image(
     file: UploadFile = File(...),
     current_user: UserOut = Depends(get_current_user)
 ):
-    contents = await file.read()
+    contents = await read_upload_limited(file, MAX_SIZE_MB)
     if not image_service.validate(contents):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -54,7 +57,7 @@ async def generate_caption(
     style: str = Form("casual"),
     current_user: UserOut = Depends(get_current_user)
 ):
-    contents = await file.read()
+    contents = await read_upload_limited(file, MAX_SIZE_MB)
     if not image_service.validate(contents):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -84,7 +87,7 @@ async def generate_captions(
     style: str = Form("casual"),
     current_user: UserOut = Depends(get_current_user)
 ):
-    contents = await file.read()
+    contents = await read_upload_limited(file, MAX_SIZE_MB)
     if not image_service.validate(contents):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -113,7 +116,7 @@ async def background_suggestions(
     file: UploadFile = File(...),
     current_user: UserOut = Depends(get_current_user)
 ):
-    contents = await file.read()
+    contents = await read_upload_limited(file, MAX_SIZE_MB)
     if not image_service.validate(contents):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -142,7 +145,7 @@ async def analyze_image_advanced(
     file: UploadFile = File(...),
     current_user: UserOut = Depends(get_current_user)
 ):
-    contents = await file.read()
+    contents = await read_upload_limited(file, MAX_SIZE_MB)
     if not image_service.validate(contents):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -184,7 +187,7 @@ async def analyze_image_advanced_batch(
 
     async def process_single_file(upload: UploadFile) -> BatchAdvancedAnalysisItem:
         try:
-            contents = await upload.read()
+            contents = await read_upload_limited(upload, MAX_SIZE_MB)
             if not image_service.validate(contents):
                 return BatchAdvancedAnalysisItem(
                     filename=upload.filename or "unknown",
@@ -197,6 +200,13 @@ async def analyze_image_advanced_batch(
                 filename=upload.filename or "unknown",
                 status="success",
                 analysis=AdvancedAnalysisResponse(**analysis)
+            )
+        except HTTPException as exc:
+            # e.g. a file over the size limit: report it for this file only
+            return BatchAdvancedAnalysisItem(
+                filename=upload.filename or "unknown",
+                status="error",
+                error=str(exc.detail)
             )
         except Exception as e:
             return BatchAdvancedAnalysisItem(
