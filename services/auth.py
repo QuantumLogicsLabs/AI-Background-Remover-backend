@@ -11,6 +11,7 @@ Responsibilities
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -23,12 +24,40 @@ from jose import JWTError, jwt
 from models.user import TokenData, UserOut
 from services.database import get_collection
 
+logger = logging.getLogger(__name__)
+
 # ── Config from environment ────────────────────────────────────────────────
 
-SECRET_KEY  = os.getenv("SECRET_KEY", "change-me-in-production-use-a-long-random-string")
+_DEFAULT_SECRET_KEY = "change-me-in-production-use-a-long-random-string"
+# Values that are public knowledge: the built-in default and the .env.example placeholder.
+_PLACEHOLDER_SECRETS = {
+    _DEFAULT_SECRET_KEY,
+    "generate-with-python-secrets-token-hex-32",
+}
+MIN_SECRET_LENGTH = 32
+
+
+def secret_key_problem(secret: str) -> Optional[str]:
+    """Return a warning message if the signing key is unsafe, otherwise None."""
+    if secret in _PLACEHOLDER_SECRETS:
+        return (
+            "SECRET_KEY is missing or still a placeholder, so login tokens are signed with a "
+            "publicly known key and can be forged. Set a random value in .env: "
+            "python -c \"import secrets; print(secrets.token_hex(32))\""
+        )
+    if len(secret) < MIN_SECRET_LENGTH:
+        return f"SECRET_KEY is shorter than {MIN_SECRET_LENGTH} characters. Use a longer random value."
+    return None
+
+
+SECRET_KEY  = os.getenv("SECRET_KEY", _DEFAULT_SECRET_KEY)
 ALGORITHM   = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES  = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES",  "60"))
 REFRESH_TOKEN_EXPIRE_DAYS    = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS",    "30"))
+
+_secret_problem = secret_key_problem(SECRET_KEY)
+if _secret_problem:
+    logger.warning("[SECURITY] %s", _secret_problem)
 
 # Cookie name used for the refresh token
 REFRESH_COOKIE_NAME = "bgr_refresh"
@@ -103,6 +132,7 @@ def is_email_verified(doc: dict) -> bool:
     """Social-login accounts are verified by the provider; password accounts need the code."""
     return doc.get("email_verified") is True or bool(doc.get("oauth"))
 
+
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserOut:
     """
     Resolve a Bearer access JWT to a UserOut model.
@@ -120,7 +150,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserOut:
     doc = await collection.find_one({"user_id": token_data.user_id}, {"_id": 0})
     if doc is None:
         raise credentials_exc
-    
+
     if not is_email_verified(doc):
         raise credentials_exc
 
